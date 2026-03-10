@@ -1706,6 +1706,7 @@ impl Workspace {
                     scanout_node,
                     false,
                     [0, 0, 0, 0],
+                    0,
                     &mut fullscreen_push,
                     None,
                 );
@@ -1894,6 +1895,7 @@ impl Workspace {
                 output_scale.into(),
                 alpha,
                 scanout_node,
+                0,
                 &mut |elem| push(WorkspaceRenderElement::FullscreenPopup(elem.into())),
             );
         }
