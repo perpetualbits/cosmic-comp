@@ -44,7 +44,7 @@ use crate::{
         element::{AsGlowRenderer, CosmicElement, DamageElement, FromGlesError},
         render_workspace,
     },
-    shell::{CosmicMappedRenderElement, CosmicSurface, WorkspaceRenderElement},
+    shell::{CosmicMappedRenderElement, CosmicSurface, CursorGeometry, WorkspaceRenderElement},
     state::{Common, KmsNodes, State},
     utils::prelude::{PointExt, PointGlobalExt, RectExt, RectLocalExt, SeatExt},
     wayland::{
@@ -796,7 +796,7 @@ pub fn render_cursor_to_buffer(
     let buffer = frame.buffer();
     let mut cursor_size = seat
         .cursor_geometry((0.0, 0.0), state.common.clock.now())
-        .map(|(geo, _hotspot)| geo.size)
+        .map(|CursorGeometry { geometry, .. }| geometry.size)
         .unwrap_or_else(|| Size::from((64, 64)));
     let buffer_size = buffer_dimensions(&buffer).unwrap();
     // Client shouldn't try to allocate 0x0 buffer
