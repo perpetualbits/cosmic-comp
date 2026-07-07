@@ -9,7 +9,7 @@ use smithay::{
             buffer_dimensions, buffer_type,
             damage::{Error as DTError, OutputDamageTracker, RenderOutputResult},
             element::{
-                AsRenderElements, RenderElement,
+                AsRenderElements, RenderElement, UnderlyingStorage,
                 surface::WaylandSurfaceRenderElement,
                 utils::{Relocate, RelocateRenderElement},
             },
@@ -57,10 +57,30 @@ use crate::{
 
 use super::{super::data_device::get_dnd_icon, user_data::SessionHolder};
 
+pub fn render_element_buffers<R, E>(
+    renderer: &mut R,
+    elements: &[E],
+) -> Vec<smithay::backend::renderer::utils::Buffer>
+where
+    R: AsGlowRenderer,
+    E: RenderElement<R>,
+{
+    elements
+        .iter()
+        .filter_map(|elem| match elem.underlying_storage(renderer) {
+            Some(UnderlyingStorage::Wayland(buffer)) => Some(buffer.clone()),
+            Some(UnderlyingStorage::Memory(_)) | None => None,
+        })
+        .collect()
+}
+
 pub struct PendingImageCopyData {
     pub frame: Frame,
     pub damage: Vec<smithay::utils::Rectangle<i32, BufferCoords>>,
     pub sync: SyncPoint,
+    // Hold reference so `wl_buffer` isn't released and sync point isn't signaled
+    // until image copy completes.
+    _buffers: Vec<smithay::backend::renderer::utils::Buffer>,
 }
 
 impl PendingImageCopyData {
@@ -103,6 +123,7 @@ pub fn submit_buffer<R>(
     transform: Transform,
     damage: Option<&[Rectangle<i32, Physical>]>,
     mut sync: SyncPoint,
+    buffers: Vec<smithay::backend::renderer::utils::Buffer>,
 ) -> Result<Option<PendingImageCopyData>, R::Error>
 where
     R: ExportMem,
@@ -182,6 +203,7 @@ where
             })
             .collect(),
         sync,
+        _buffers: buffers,
     }))
 }
 
@@ -202,7 +224,13 @@ where
         &'d mut OutputDamageTracker,
         usize,
         Vec<Rectangle<i32, BufferCoords>>,
-    ) -> Result<RenderOutputResult<'d>, DTError<R::Error>>,
+    ) -> Result<
+        (
+            RenderOutputResult<'d>,
+            Vec<smithay::backend::renderer::utils::Buffer>,
+        ),
+        DTError<R::Error>,
+    >,
 {
     let mut session_user_data = session.lock().unwrap();
 
@@ -246,30 +274,25 @@ where
         .as_mut()
         .map(|(_, tex)| renderer.bind(tex).map_err(DTError::Rendering))
         .transpose()?;
-    let res = render_fn(
+    let (result, buffers) = render_fn(
         &frame.buffer(),
         renderer,
         fb.as_mut(),
         dt,
         age,
         frame.damage(),
-    );
+    )?;
 
-    match res {
-        Ok(result) => submit_buffer(
-            frame,
-            renderer,
-            fb.as_mut(),
-            transform,
-            result.damage.map(|x| x.as_slice()),
-            result.sync,
-        )
-        .map_err(DTError::Rendering),
-        Err(err) => {
-            frame.fail(CaptureFailureReason::Unknown);
-            Err(err)
-        }
-    }
+    submit_buffer(
+        frame,
+        renderer,
+        fb.as_mut(),
+        transform,
+        result.damage.map(|x| x.as_slice()),
+        result.sync,
+        buffers,
+    )
+    .map_err(DTError::Rendering)
 }
 
 pub fn render_workspace_to_buffer(
@@ -317,7 +340,13 @@ pub fn render_workspace_to_buffer(
         common: &mut Common,
         output: &Output,
         handle: (WorkspaceHandle, usize),
-    ) -> Result<RenderOutputResult<'d>, DTError<R::Error>>
+    ) -> Result<
+        (
+            RenderOutputResult<'d>,
+            Vec<smithay::backend::renderer::utils::Buffer>,
+        ),
+        DTError<R::Error>,
+    >
     where
         R: AsGlowRenderer,
         R::TextureId: Send + Clone + 'static,
@@ -358,7 +387,7 @@ pub fn render_workspace_to_buffer(
                 .collect()
         });
 
-        if let Ok(dmabuf) = get_dmabuf(buffer) {
+        let (res, elements) = if let Ok(dmabuf) = get_dmabuf(buffer) {
             let mut dmabuf = dmabuf.clone();
             let mut fb = renderer.bind(&mut dmabuf).map_err(DTError::Rendering)?;
             render_workspace(
@@ -376,8 +405,7 @@ pub fn render_workspace_to_buffer(
                 handle,
                 cursor_mode,
                 ElementFilter::ExcludeWorkspaceOverview,
-            )
-            .map(|res| res.0)
+            )?
         } else {
             let target = offscreen.expect("shm buffers should have an offscreen target");
             render_workspace(
@@ -395,9 +423,12 @@ pub fn render_workspace_to_buffer(
                 handle,
                 cursor_mode,
                 ElementFilter::ExcludeWorkspaceOverview,
-            )
-            .map(|res| res.0)
-        }
+            )?
+        };
+
+        let buffers = render_element_buffers(renderer, &elements);
+
+        Ok((res, buffers))
     }
 
     let draw_cursor = session.draw_cursor();
@@ -550,7 +581,13 @@ pub fn render_window_to_buffer(
         common: &mut Common,
         toplevel: &CosmicSurface,
         geometry: Rectangle<i32, Logical>,
-    ) -> Result<RenderOutputResult<'d>, DTError<R::Error>>
+    ) -> Result<
+        (
+            RenderOutputResult<'d>,
+            Vec<smithay::backend::renderer::utils::Buffer>,
+        ),
+        DTError<R::Error>,
+    >
     where
         R: AsGlowRenderer,
         R::TextureId: Send + Clone + 'static,
@@ -642,16 +679,20 @@ pub fn render_window_to_buffer(
             1.0,
         ));
 
-        if let Ok(dmabuf) = get_dmabuf(buffer) {
+        let res = if let Ok(dmabuf) = get_dmabuf(buffer) {
             let mut dmabuf_clone = dmabuf.clone();
             let mut fb = renderer
                 .bind(&mut dmabuf_clone)
                 .map_err(DTError::Rendering)?;
-            dt.render_output(renderer, &mut fb, age, &elements, Color32F::TRANSPARENT)
+            dt.render_output(renderer, &mut fb, age, &elements, Color32F::TRANSPARENT)?
         } else {
             let fb = offscreen.expect("shm buffer should have an offscreen target");
-            dt.render_output(renderer, fb, age, &elements, Color32F::TRANSPARENT)
-        }
+            dt.render_output(renderer, fb, age, &elements, Color32F::TRANSPARENT)?
+        };
+
+        let buffers = render_element_buffers(renderer, &elements);
+
+        Ok((res, buffers))
     }
 
     let common = &mut state.common;
@@ -789,7 +830,13 @@ pub fn render_cursor_to_buffer(
         additional_damage: Vec<Rectangle<i32, BufferCoords>>,
         common: &mut Common,
         seat: &Seat<State>,
-    ) -> Result<RenderOutputResult<'d>, DTError<R::Error>>
+    ) -> Result<
+        (
+            RenderOutputResult<'d>,
+            Vec<smithay::backend::renderer::utils::Buffer>,
+        ),
+        DTError<R::Error>,
+    >
     where
         R: AsGlowRenderer,
         R::TextureId: Send + Clone + 'static,
@@ -821,16 +868,20 @@ pub fn render_cursor_to_buffer(
         .map(WindowCaptureElement::from)
         .collect::<Vec<_>>();
 
-        if let Ok(dmabuf) = get_dmabuf(buffer) {
+        let res = if let Ok(dmabuf) = get_dmabuf(buffer) {
             let mut dmabuf_clone = dmabuf.clone();
             let mut fb = renderer
                 .bind(&mut dmabuf_clone)
                 .map_err(DTError::Rendering)?;
-            dt.render_output(renderer, &mut fb, age, &elements, [0.0, 0.0, 0.0, 0.0])
+            dt.render_output(renderer, &mut fb, age, &elements, [0.0, 0.0, 0.0, 0.0])?
         } else {
             let fb = offscreen.expect("shm buffers should have offscreen target");
-            dt.render_output(renderer, fb, age, &elements, [0.0, 0.0, 0.0, 0.0])
-        }
+            dt.render_output(renderer, fb, age, &elements, [0.0, 0.0, 0.0, 0.0])?
+        };
+
+        let buffers = render_element_buffers(renderer, &elements);
+
+        Ok((res, buffers))
     }
 
     let common = &mut state.common;
