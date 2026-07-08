@@ -12,7 +12,8 @@ use smithay::{
 
 use crate::{
     shell::{
-        CosmicSurface, ModalBehavior, Shell, WorkspaceDelta, focus::target::KeyboardFocusTarget,
+        CosmicSurface, ModalBehavior, Raise, Shell, WorkspaceDelta,
+        focus::target::KeyboardFocusTarget,
     },
     utils::prelude::*,
     wayland::protocols::{
@@ -134,7 +135,7 @@ impl ToplevelManagementHandler for State {
                 }
             }
 
-            Shell::set_focus(self, Some(&target), &seat, None, false);
+            Shell::set_focus(self, Some(&target), &seat, None, false, Raise::Yes);
             return;
         }
     }
@@ -171,7 +172,7 @@ impl ToplevelManagementHandler for State {
         );
         if let Some((target, _)) = res {
             std::mem::drop(shell);
-            Shell::set_focus(self, Some(&target), &seat, None, true);
+            Shell::set_focus(self, Some(&target), &seat, None, true, Raise::Yes);
         }
     }
 
@@ -197,7 +198,7 @@ impl ToplevelManagementHandler for State {
             ModalBehavior::Block,
         ) {
             std::mem::drop(shell);
-            Shell::set_focus(self, Some(&target), &seat, None, true);
+            Shell::set_focus(self, Some(&target), &seat, None, true, Raise::Yes);
         }
     }
 

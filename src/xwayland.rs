@@ -9,7 +9,7 @@ use std::{
 use crate::{
     backend::render::cursor::{Cursor, load_cursor_env, load_cursor_theme},
     shell::{
-        CosmicSurface, ModalBehavior, PendingWindow, Shell,
+        CosmicSurface, ModalBehavior, PendingWindow, Raise, Shell,
         focus::target::KeyboardFocusTarget,
         grabs::{GrabType, ReleaseMode},
     },
@@ -1180,7 +1180,7 @@ impl XwmHandler for State {
         ) {
             Some(target) => {
                 std::mem::drop(shell);
-                Shell::set_focus(self, Some(&target), &seat, None, true);
+                Shell::set_focus(self, Some(&target), &seat, None, true, Raise::Yes);
             }
             None => {
                 if let Some(pending) = shell
@@ -1216,7 +1216,7 @@ impl XwmHandler for State {
         ) {
             std::mem::drop(shell);
             if should_focus {
-                Shell::set_focus(self, Some(&target), &seat, None, true);
+                Shell::set_focus(self, Some(&target), &seat, None, true, Raise::Yes);
             }
         } else if let Some(pending) = shell
             .pending_windows
